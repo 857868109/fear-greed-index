@@ -3,13 +3,12 @@ import tushare as ts
 import pandas as pd
 import math
 from datetime import datetime
+import os
 
 app = Flask(__name__)
 
-# ======================
-# 填入你的 Tushare Token
-# ======================
-TS_TOKEN = "989f25098a22e67e145a04a26a37034775ee44ea6e5258253a034ad1"
+# 从 Vercel 环境变量读取 TOKEN（你已经配置好了，不用改）
+TS_TOKEN = os.environ.get('TS_TOKEN')
 ts.set_token(TS_TOKEN)
 pro = ts.pro_api()
 
@@ -133,6 +132,3 @@ def index():
             "1year_ago": {"score": round(today-15.7,2), "level": get_level(today-15.7)}
         }
     })
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=9000)
