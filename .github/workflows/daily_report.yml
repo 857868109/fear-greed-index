@@ -2,13 +2,14 @@ name: Daily Fear-Greed Report
 
 on:
   schedule:
-    # UTC时间 8:00 = 北京时间 16:00 (股市收盘后)
+    # UTC 8:00 = 北京时间 16:00（股市收盘后）
     - cron: '0 8 * * 1-5'
   workflow_dispatch:  # 允许手动触发
 
 jobs:
   run-report:
     runs-on: ubuntu-latest
+    
     steps:
       - name: 拉取代码
         uses: actions/checkout@v4
@@ -16,22 +17,32 @@ jobs:
       - name: 配置Python环境
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.9'
           
-      - name: 安装依赖
+      - name: 升级pip并安装依赖
         run: |
-          pip install -r requirements.txt
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
           
       - name: 生成恐贪指数报告
-        run: python fear_greed_index.py
+        run: python app.py
         
-      - name: 安装wxgzh发布工具
-        run: npm install -g @lyhue1991/wxgzh
-        
-      - name: 配置wxgzh并发布
+      - name: 安装Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          
+      - name: 安装wxgzh并发布到公众号
         env:
           WX_APPID: ${{ secrets.WX_APPID }}
           WX_APPSECRET: ${{ secrets.WX_APPSECRET }}
         run: |
+          npm install -g @lyhue1991/wxgzh
           wxgzh config --account "A股恐贪指数" --appid "$WX_APPID" --appsecret "$WX_APPSECRET"
           wxgzh fear_greed_report.md --author "AI助手"
+          
+      - name: 上传报告作为构建产物（可选）
+        uses: actions/upload-artifact@v4
+        with:
+          name: fear-greed-report
+          path: fear_greed_report.md
