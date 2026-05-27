@@ -1,134 +1,110 @@
-from flask import Flask, jsonify
-import tushare as ts
+# -*- coding: utf-8 -*-
+import akshare as ak
 import pandas as pd
-import math
-from datetime import datetime
-import os
+from datetime import datetime, timedelta
 
-app = Flask(__name__)
-
-# 从 Vercel 环境变量读取 TOKEN（你已经配置好了，不用改）
-TS_TOKEN = os.environ.get('TS_TOKEN')
-ts.set_token(TS_TOKEN)
-pro = ts.pro_api()
-
-# 10 个指标区间（韭圈儿同款）
-INDEX_RANGES = {
-    "pe_ttm": (8.0, 26.0),
-    "pb": (1.0, 4.5),
-    "north_10d": (-2000, 2000),
-    "margin_ratio": (1.4, 4.2),
-    "up_down_ratio": (0.2, 3.5),
-    "turnover": (0.5, 3.0),
-    "vol_20d": (8.0, 45.0),
-    "fund_flow": (-500, 1500),
-    "rr_degree": (0.3, 1.8),
-    "hs_vol": (15, 60)
-}
-
-# 权重
-WEIGHTS = {
-    "pe_ttm": 0.15,
-    "pb": 0.15,
-    "north_10d": 0.12,
-    "margin_ratio": 0.12,
-    "up_down_ratio": 0.10,
-    "turnover": 0.08,
-    "vol_20d": 0.08,
-    "fund_flow": 0.06,
-    "rr_degree": 0.06,
-    "hs_vol": 0.08
-}
-
-# 归一化
-def normalize(val, vmin, vmax, reverse=False):
-    if math.isnan(val):
-        val = (vmin + vmax) / 2
-    val = max(vmin, min(vmax, val))
-    res = (val - vmin) / (vmax - vmin) * 100
-    return 100 - res if reverse else res
-
-# 情绪等级
-def get_level(score):
-    if score <= 20:
-        return "极度恐慌"
-    elif score <= 40:
-        return "恐慌"
-    elif score <= 60:
-        return "中性"
-    elif score <= 80:
-        return "贪婪"
-    else:
-        return "极度贪婪"
-
-# 计算恐贪指数
-def calc_fear_greed_real():
+def calculate_fear_greed():
+    """获取上证指数并计算简化版恐贪指数"""
     try:
-        today = datetime.now().strftime("%Y%m%d")
-        start_day = "20260101"
+        # 1. 获取数据 (使用免费AKShare库)
+        end_date = datetime.now().strftime('%Y%m%d')
+        start_date = (datetime.now() - timedelta(days=240)).strftime('%Y%m%d')
+        
+        # 获取上证指数历史数据
+        df = ak.stock_zh_a_hist(symbol="000001", period="daily", start_date=start_date, end_date=end_date, adjust="qfq")
+        
+        if df is None or df.empty:
+            print("获取数据失败")
+            return None
+            
+        # 重命名列，方便处理
+        df.rename(columns={'日期': 'date', '收盘': 'close', '最高': 'high', '最低': 'low'}, inplace=True)
+        df = df.sort_values('date')
+        
+        # 2. 计算恐贪指数 (20日周期)
+        period = 20
+        df['high_max'] = df['high'].rolling(window=period).max()
+        df['low_min'] = df['low'].rolling(window=period).min()
+        
+        # 恐贪指数 = (当前价 - 近期最低价) / (近期最高价 - 近期最低价) * 100
+        df['fear_greed'] = (df['close'] - df['low_min']) / (df['high_max'] - df['low_min']) * 100
+        df['fear_greed'] = df['fear_greed'].fillna(50).clip(0, 100)
+        
+        # 3. 获取最新数据和市场概况
+        latest = df.iloc[-1]
+        fg_value = latest['fear_greed']
+        
+        # 判断情绪
+        if fg_value <= 25:
+            sentiment = "极度恐惧 😨"
+        elif fg_value <= 44:
+            sentiment = "恐惧 😰"
+        elif fg_value <= 55:
+            sentiment = "中性 😑"
+        elif fg_value <= 75:
+            sentiment = "贪婪 😋"
+        else:
+            sentiment = "极度贪婪 🤩"
+        
+        # 获取涨跌家数
+        spot_df = ak.stock_zh_a_spot()
+        up = spot_df[spot_df['涨跌幅'] > 0].shape[0] if '涨跌幅' in spot_df.columns else 0
+        down = spot_df[spot_df['涨跌幅'] < 0].shape[0] if '涨跌幅' in spot_df.columns else 0
+        
+        # 4. 生成Markdown报告
+        today_str = datetime.now().strftime('%Y-%m-%d %A')
+        report = f"""# 📊 A股恐贪指数日报 - {today_str}
 
-        # 1. 沪深300 PE/PB
-        index_val = pro.index_dailybasic(ts_code='000300.SH', start_date=start_day, end_date=today)
-        pe = float(index_val['pe'].iloc[-1])
-        pb = float(index_val['pb'].iloc[-1])
+## 📈 今日市场情绪
+| 指数 | 恐贪值 | 情绪状态 | 最新收盘 |
+|:---|:---|:---|:---|
+| 上证指数 | **{fg_value:.1f}** | **{sentiment}** | {latest['close']:.2f} |
 
-        # 2. 北向 10 日净流入
-        north_flow = pro.moneyflow_hsgt(start_date=start_day, end_date=today)
-        north_10d = float(north_flow['net_amount'].tail(10).sum())
+## 📊 市场统计数据
+| 指标 | 数值 |
+|:---|:---|
+| 上涨家数 | {up} |
+| 下跌家数 | {down} |
+| 涨跌比 | {up/down if down>0 else up:.2f} |
 
-        # 3. 两融占比
-        margin_data = pro.margin(start_date=start_day, end_date=today)
-        margin_ratio = float(margin_data['fin_ratio'].iloc[-1])
-
-        # 4. 涨跌家数比
-        stock_basic = pro.daily_basic(trade_date=today)
-        up_num = len(stock_basic[stock_basic['change'] > 0])
-        down_num = len(stock_basic[stock_basic['change'] < 0])
-        up_down_ratio = up_num / down_num if down_num != 0 else 1.0
-
-        # 5. 换手率
-        turnover = float(stock_basic['turnover_rate'].mean())
-
-        # 6. 20日波动率
-        index_price = pro.index_daily(ts_code='000300.SH', start_date=start_day, end_date=today)
-        close_line = index_price['close'].tail(22)
-        vol_20d = close_line.pct_change().std() * 100
-
-        # 补充指标
-        fund_flow = 220
-        rr_degree = 1.0
-        hs_vol = 23
-
-        # 计算总分
-        s1 = normalize(pe, *INDEX_RANGES["pe_ttm"]) * WEIGHTS["pe_ttm"]
-        s2 = normalize(pb, *INDEX_RANGES["pb"]) * WEIGHTS["pb"]
-        s3 = normalize(north_10d, *INDEX_RANGES["north_10d"]) * WEIGHTS["north_10d"]
-        s4 = normalize(margin_ratio, *INDEX_RANGES["margin_ratio"]) * WEIGHTS["margin_ratio"]
-        s5 = normalize(up_down_ratio, *INDEX_RANGES["up_down_ratio"]) * WEIGHTS["up_down_ratio"]
-        s6 = normalize(turnover, *INDEX_RANGES["turnover"]) * WEIGHTS["turnover"]
-        s7 = normalize(vol_20d, *INDEX_RANGES["vol_20d"], True) * WEIGHTS["vol_20d"]
-        s8 = normalize(fund_flow, *INDEX_RANGES["fund_flow"]) * WEIGHTS["fund_flow"]
-        s9 = normalize(rr_degree, *INDEX_RANGES["rr_degree"]) * WEIGHTS["rr_degree"]
-        s10 = normalize(hs_vol, *INDEX_RANGES["hs_vol"], True) * WEIGHTS["hs_vol"]
-
-        total = round(s1+s2+s3+s4+s5+s6+s7+s8+s9+s10, 2)
-        return total
-
+## 📉 近期恐贪指数走势 (近10日)
+| 日期 | 恐贪值 | 情绪 |
+|:---|:---|:---|
+"""
+        # 添加最近10天的数据
+        for _, row in df.tail(10).iterrows():
+            date_str = row['date'].strftime('%m-%d')
+            val = row['fear_greed']
+            if val <= 25:
+                sta = "极度恐惧"
+            elif val <= 44:
+                sta = "恐惧"
+            elif val <= 55:
+                sta = "中性"
+            elif val <= 75:
+                sta = "贪婪"
+            else:
+                sta = "极度贪婪"
+            report += f"| {date_str} | {val:.1f} | {sta} |\n"
+            
+        report += f"""
+## 💡 投资小贴士
+> 当前恐贪指数为 **{fg_value:.1f}**，市场处于 **{sentiment}** 状态。
+> * **{fg_value:.1f} ≤ 25 (极度恐惧)**：市场可能被过度悲观情绪笼罩，或可留意中长期布局机会。
+> * **{fg_value:.1f} ≥ 75 (极度贪婪)**：市场情绪可能过于亢奋，短期需留意回调风险。
+>
+> 📌 **免责声明**：本报告仅为数据展示和自动化测试，不构成任何投资建议。市场有风险，投资需谨慎。
+"""
+        # 保存报告
+        with open('fear_greed_report.md', 'w', encoding='utf-8') as f:
+            f.write(report)
+            
+        print("✅ 报告生成成功！")
+        return True
+        
     except Exception as e:
-        print("错误：", e)
-        return 55.0
+        print(f"❌ 运行出错: {e}")
+        return False
 
-# 接口
-@app.route('/api/fear-greed')
-def index():
-    today = calc_fear_greed_real()
-    return jsonify({
-        "code": 0,
-        "data": {
-            "today": {"score": today, "level": get_level(today)},
-            "1day_ago": {"score": round(today-1.2,2), "level": get_level(today-1.2)},
-            "1week_ago": {"score": round(today-4.5,2), "level": get_level(today-4.5)},
-            "1month_ago": {"score": round(today-9.2,2), "level": get_level(today-9.2)},
-            "1year_ago": {"score": round(today-15.7,2), "level": get_level(today-15.7)}
-        }
-    })
+if __name__ == "__main__":
+    calculate_fear_greed()
