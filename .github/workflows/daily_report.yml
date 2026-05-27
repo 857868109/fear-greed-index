@@ -1,0 +1,37 @@
+name: Daily Fear-Greed Report
+
+on:
+  schedule:
+    # UTC时间 8:00 = 北京时间 16:00 (股市收盘后)
+    - cron: '0 8 * * 1-5'
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  run-report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+        
+      - name: 配置Python环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      - name: 安装依赖
+        run: |
+          pip install -r requirements.txt
+          
+      - name: 生成恐贪指数报告
+        run: python fear_greed_index.py
+        
+      - name: 安装wxgzh发布工具
+        run: npm install -g @lyhue1991/wxgzh
+        
+      - name: 配置wxgzh并发布
+        env:
+          WX_APPID: ${{ secrets.WX_APPID }}
+          WX_APPSECRET: ${{ secrets.WX_APPSECRET }}
+        run: |
+          wxgzh config --account "A股恐贪指数" --appid "$WX_APPID" --appsecret "$WX_APPSECRET"
+          wxgzh fear_greed_report.md --author "AI助手"
